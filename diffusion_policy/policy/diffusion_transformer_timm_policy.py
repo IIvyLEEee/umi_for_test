@@ -69,8 +69,8 @@ class DiffusionTransformerTimmPolicy(BaseImagePolicy):
 
         if num_inference_steps is None:
             num_inference_steps = noise_scheduler.config.num_train_timesteps
-        # self.num_inference_steps = num_inference_steps
-        self.num_inference_steps = 16
+        self.num_inference_steps = num_inference_steps
+        # self.num_inference_steps = 16
     
     # ========= inference  ============
     def conditional_sample(self, 
@@ -122,6 +122,9 @@ class DiffusionTransformerTimmPolicy(BaseImagePolicy):
         result: must include "action" key
         """
         assert 'past_action' not in obs_dict # not implemented yet
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        start_event.record()
         # normalize input
         nobs = self.normalizer.normalize(obs_dict)
         B = next(iter(nobs.values())).shape[0]
@@ -152,6 +155,9 @@ class DiffusionTransformerTimmPolicy(BaseImagePolicy):
             'action': action_pred,
             'action_pred': action_pred
         }
+        end_event.record()
+        torch.cuda.synchronize()
+        print(f"policy_fwd_ms: {start_event.elapsed_time(end_event):.3f}")
         return result
 
     # ========= training  ============

@@ -1,224 +1,194 @@
-import copy
-from typing import Optional
+import argparse
+import math
 
 import torch
 import torch.nn as nn
-from diffusion_policy.model.our_module.layernorm import LayerNorm
 
-
-from diffusion_policy.model.our_module.multihead_attn import MultiHeadAttention
+from diffusion_policy.model.our_module.decoder import TransformerDecoderLayer
+from diffusion_policy.model.our_module.layernorm import make_layer_norm
 from diffusion_policy.model.our_module.linear import Linear
-# from diffusion_policy.module.quant_attn import MultiHeadAttention
+from diffusion_policy.model.our_module.multihead_attn import (
+    MultiHeadAttentionFunc1,
+    MultiHeadAttentionFunc2,
+)
 from diffusion_policy.model.our_module.relu import relu
-from torch.nn.modules.container import ModuleList
+from diffusion_policy.model.our_module.softmax import Softmax
 
 
-class TransformerDecoderLayer(nn.Module):
-    __constants__ = ["batch_first", "norm_first"]
+def float_linear(module, input):
+    return module(input.to(module.weight.dtype))
 
-    def __init__(
-        self,
-        d_model: int,
-        nhead: int,
-        dim_feedforward: int = 2048,
-        dropout: float = 0.1,
-        layer_norm_eps: float = 1e-5,
-        norm_first: bool = False,
-    ) -> None:
-        super(TransformerDecoderLayer, self).__init__()
-        self.self_attn = MultiHeadAttention(
-            d_model, nhead, dropout=dropout, batch_first=True
+
+class NaiveMultiHeadAttention(nn.Module):
+    def __init__(self, embed_size, num_heads):
+        super().__init__()
+        self.num_heads = num_heads
+        self.values = Linear(embed_size, embed_size, bias=False)
+        self.keys = Linear(embed_size, embed_size, bias=False)
+        self.queries = Linear(embed_size, embed_size, bias=False)
+        self.fc_out = Linear(embed_size, embed_size, bias=False)
+        self.softmax = Softmax()
+
+    def forward(self, queries, keys, values):
+        queries = float_linear(self.queries, queries)
+        keys = float_linear(self.keys, keys)
+        values = float_linear(self.values, values)
+        qk = MultiHeadAttentionFunc1.apply(queries, keys, self.num_heads, None)
+        qk = self.softmax(qk).to(torch.float)
+        qkv = MultiHeadAttentionFunc2.apply(qk, values, self.num_heads)
+        return float_linear(self.fc_out, qkv)
+
+
+class NaiveTransformerDecoderLayer(nn.Module):
+    def __init__(self, d_model, nhead, dim_feedforward):
+        super().__init__()
+        self.self_attn = NaiveMultiHeadAttention(d_model, nhead)
+        self.multihead_attn = NaiveMultiHeadAttention(d_model, nhead)
+        self.linear1 = Linear(d_model, dim_feedforward)
+        self.linear2 = Linear(dim_feedforward, d_model)
+        self.norm1 = make_layer_norm(d_model, elementwise_affine=False)
+        self.norm2 = make_layer_norm(d_model, elementwise_affine=False)
+        self.norm3 = make_layer_norm(d_model, elementwise_affine=False)
+
+    def forward_with_stages(self, tgt, memory):
+        stages = {}
+        stages["norm1"] = self.norm1(tgt)
+        stages["self_attn"] = self.self_attn(
+            stages["norm1"], stages["norm1"], stages["norm1"]
         )
-        self.multihead_attn = MultiHeadAttention(
-            d_model, nhead, dropout=dropout, batch_first=True
+        stages["residual1"] = tgt + stages["self_attn"]
+        stages["norm2"] = self.norm2(stages["residual1"])
+        stages["cross_attn"] = self.multihead_attn(
+            stages["norm2"], memory, memory
         )
-        # Implementation of Feedforward model
-        self.linear1 = Linear(d_model, 1024)
-        self.dropout = nn.Dropout(dropout)
-        self.linear2 = Linear(1024, d_model)
-
-        self.norm_first = norm_first
-        self.norm1 = LayerNorm(d_model, eps=layer_norm_eps, elementwise_affine=False)
-        self.norm2 = LayerNorm(d_model, eps=layer_norm_eps, elementwise_affine=False)
-        self.norm3 = LayerNorm(d_model, eps=layer_norm_eps, elementwise_affine=False)
-        self.dropout1 = nn.Dropout(dropout)
-        self.dropout2 = nn.Dropout(dropout)
-        self.dropout3 = nn.Dropout(dropout)
-
-        self.activation = relu
-
-    def forward(
-        self,
-        tgt: torch.Tensor,
-        memory: torch.Tensor,
-        init=False,
-        number=0,
-    ) -> torch.Tensor:
-        x = tgt
-        if self.norm_first:
-            x = x + self._sa_block(self.norm1(x))
-            x = x + self._mha_block(self.norm2(x), memory)
-            x = x + self._ff_block(self.norm3(x), init, number)
-        else:
-            x = self.norm1(x + self._sa_block(x))
-            x = self.norm2(x + self._mha_block(x, memory))
-            x = self.norm3(x + self._ff_block(x, init, number))
-
-        return x
-
-    # self-attention block
-    def _sa_block(
-        self, x: torch.Tensor
-    ) -> torch.Tensor:
-        # print("self_attn:")
-        x = self.self_attn(x, x, x)
-        return self.dropout1(x)
-
-    # multihead attention block
-    def _mha_block(
-        self, x: torch.Tensor, mem: torch.Tensor
-    ) -> torch.Tensor:
-        # print("multihead_attn:")
-        x = self.multihead_attn(x, mem, mem)
-        return self.dropout2(x)
-
-    # feed forward block
-    def _ff_block(self, x: torch.Tensor, init, number) -> torch.Tensor:
-        x = self.linear2(
-            self.dropout(self.activation(self.linear1(x, init, number))), init
+        stages["residual2"] = stages["residual1"] + stages["cross_attn"]
+        stages["norm3"] = self.norm3(stages["residual2"])
+        stages["ff"] = float_linear(
+            self.linear2, relu(float_linear(self.linear1, stages["norm3"]))
         )
-        return self.dropout3(x)
+        stages["output"] = stages["residual2"] + stages["ff"]
+        return stages
 
 
-class TransformerDecoder(nn.Module):
-    __constants__ = ["norm"]
+def quant_forward_with_stages(layer, tgt, memory):
+    stages = {}
+    stages["norm1"] = layer.norm1(tgt)
+    stages["self_attn"] = layer._sa_block(stages["norm1"])
+    stages["residual1"] = tgt + stages["self_attn"]
+    stages["norm2"] = layer.norm2(stages["residual1"])
+    stages["cross_attn"] = layer._mha_block(stages["norm2"], memory)
+    stages["residual2"] = stages["residual1"] + stages["cross_attn"]
+    stages["norm3"] = layer.norm3(stages["residual2"])
+    stages["ff"] = layer._ff_block(stages["norm3"], False, 0)
+    stages["output"] = stages["residual2"] + stages["ff"]
+    return stages
 
-    def __init__(self, decoder_layer, num_layers, norm=None):
-        super(TransformerDecoder, self).__init__()
-        self.layers = self._get_clones(decoder_layer, num_layers)
-        self.num_layers = num_layers
-        self.norm = norm
 
-    def forward(
-        self,
-        tgt: torch.Tensor,
-        memory: torch.Tensor,
-        init=False,
-    ) -> torch.Tensor:
-        output = tgt
-        a = 0
-        for mod in self.layers:
-            output = mod(
-                output,
-                memory,
-                init=init,
-                number=a,
-            )
-            a += 1
+def copy_weights(quant_layer, naive_layer):
+    pairs = [
+        (quant_layer.self_attn.queries, naive_layer.self_attn.queries),
+        (quant_layer.self_attn.keys, naive_layer.self_attn.keys),
+        (quant_layer.self_attn.values, naive_layer.self_attn.values),
+        (quant_layer.self_attn.fc_out, naive_layer.self_attn.fc_out),
+        (quant_layer.multihead_attn.queries, naive_layer.multihead_attn.queries),
+        (quant_layer.multihead_attn.keys, naive_layer.multihead_attn.keys),
+        (quant_layer.multihead_attn.values, naive_layer.multihead_attn.values),
+        (quant_layer.multihead_attn.fc_out, naive_layer.multihead_attn.fc_out),
+        (quant_layer.linear1, naive_layer.linear1),
+        (quant_layer.linear2, naive_layer.linear2),
+    ]
+    for quant_linear, naive_linear in pairs:
+        naive_linear.weight.data.copy_(quant_linear.weight.data)
 
-        if self.norm is not None:
-            output = self.norm(output)
 
-        return output
+def metrics(quant, naive):
+    quant = quant.detach().float()
+    naive = naive.detach().float()
+    diff = quant - naive
+    naive_l2 = torch.linalg.vector_norm(naive)
+    cosine = torch.nn.functional.cosine_similarity(
+        quant.reshape(1, -1), naive.reshape(1, -1)
+    )
+    return {
+        "mae": diff.abs().mean().item(),
+        "rmse": torch.sqrt(torch.mean(diff.square())).item(),
+        "max_abs": diff.abs().max().item(),
+        "relative_l2": (
+            torch.linalg.vector_norm(diff) / naive_l2.clamp_min(1e-12)
+        ).item(),
+        "cosine": cosine.item(),
+        "finite": bool(torch.isfinite(quant).all()),
+    }
 
-    def _get_clones(self, module, N):
-        return ModuleList([copy.deepcopy(module) for _ in range(N)])
+
+def run_case(d_model, nhead, seed):
+    torch.manual_seed(seed)
+    dim_feedforward = 4 * d_model
+    quant_layer = TransformerDecoderLayer(
+        d_model=d_model,
+        nhead=nhead,
+        dim_feedforward=dim_feedforward,
+        dropout=0.0,
+        norm_first=True,
+    ).eval()
+    naive_layer = NaiveTransformerDecoderLayer(
+        d_model=d_model,
+        nhead=nhead,
+        dim_feedforward=dim_feedforward,
+    ).eval()
+
+    for module in quant_layer.modules():
+        if hasattr(module, "weight") and isinstance(module.weight, nn.Parameter):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+    copy_weights(quant_layer, naive_layer)
+
+    tgt = torch.randn(1, 16, d_model) * 0.2
+    memory = torch.randn(1, 3, d_model) * 0.2
+
+    with torch.no_grad():
+        quant_layer(tgt, memory)
+        quant_stages = quant_forward_with_stages(quant_layer, tgt, memory)
+        naive_stages = naive_layer.forward_with_stages(tgt, memory)
+
+    print(
+        f"\nTransformerDecoderLayer d_model={d_model}, heads={nhead}, "
+        f"ffn={dim_feedforward}"
+    )
+    print(
+        f"{'stage':<12} {'mae':>11} {'rmse':>11} {'max_abs':>11} "
+        f"{'rel_l2':>11} {'cosine':>11} {'finite':>8}"
+    )
+    for name in quant_stages:
+        result = metrics(quant_stages[name], naive_stages[name])
+        print(
+            f"{name:<12} {result['mae']:11.4e} {result['rmse']:11.4e} "
+            f"{result['max_abs']:11.4e} {result['relative_l2']:11.4e} "
+            f"{result['cosine']:11.6f} {str(result['finite']):>8}"
+        )
+
+    direct_output = quant_layer(tgt, memory)
+    direct_error = (direct_output.float() - quant_stages["output"].float()).abs().max()
+    if not math.isclose(direct_error.item(), 0.0, abs_tol=1e-6):
+        raise RuntimeError(f"Staged quant forward differs from layer forward: {direct_error}")
+
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--width", choices=("256", "768", "all"), default="all")
+    parser.add_argument("--seed", type=int, default=0)
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+    cases = {
+        "256": (256, 4),
+        "768": (768, 8),
+    }
+    selected = cases if args.width == "all" else {args.width: cases[args.width]}
+    for d_model, nhead in selected.values():
+        run_case(d_model, nhead, args.seed)
 
 
 if __name__ == "__main__":
-    # parameter
-    n_emb = 256
-    n_head = 4
-    n_layer = 5
-    dropout_p = 0.0
-    decoder_layer = TransformerDecoderLayer(
-        d_model=n_emb,
-        nhead=n_head,
-        dim_feedforward=4 * n_emb,
-        dropout=dropout_p,
-        activation="relu",
-        norm_first=True,
-        batch_first=True,
-    )
-    fake_layer = TransformerDecoderLayer_(
-        d_model=n_emb,
-        nhead=n_head,
-        dim_feedforward=4 * n_emb,
-        dropout=dropout_p,
-        norm_first=True,
-    )
-    in_proj_weight1 = nn.Parameter(torch.randn(3 * n_emb, n_emb, requires_grad=True))
-    out_proj_weight1 = nn.Parameter(torch.randn(n_emb, n_emb, requires_grad=True))
-    in_proj_weight2 = nn.Parameter(torch.randn(3 * n_emb, n_emb, requires_grad=True))
-    out_proj_weight2 = nn.Parameter(torch.randn(n_emb, n_emb, requires_grad=True))
-    linear1_weight = nn.Parameter(torch.randn(4 * n_emb, n_emb))
-    linear2_weight = nn.Parameter(torch.randn(n_emb, 4 * n_emb))
-    # decoder = TransformerDecoder(decoder_layer=decoder_layer, num_layers=n_layer)
-
-    # input
-    tgt = torch.randn(56, 10, 256, requires_grad=True)
-    memory = torch.randn(56, 3, 256, requires_grad=True)
-    fake_tgt = tgt
-    fake_memory = memory
-
-    T = 10
-    S = 3
-    sz = T
-    mask = (torch.triu(torch.ones(sz, sz)) == 1).transpose(0, 1)
-    mask = (
-        mask.float()
-        .masked_fill(mask == 0, float("-inf"))
-        .masked_fill(mask == 1, float(0.0))
-    )
-
-    t, s = torch.meshgrid(torch.arange(T), torch.arange(S), indexing="ij")
-    memory_mask = t >= (s - 1)
-    memory_mask = (
-        memory_mask.float()
-        .masked_fill(memory_mask == 0, float("-inf"))
-        .masked_fill(memory_mask == 1, float(0.0))
-    )
-    print(mask)
-    print(memory_mask)
-    decoder_layer.linear1.weight = linear1_weight
-    fake_layer.linear1.weight = linear1_weight
-    decoder_layer.linear2.weight = linear2_weight
-    fake_layer.linear2.weight = linear2_weight
-    decoder_layer.self_attn.in_proj_weight = nn.Parameter(in_proj_weight1)
-    fake_layer.self_attn.queries.weight = nn.Parameter(in_proj_weight1[0:n_emb, :])
-    fake_layer.self_attn.keys.weight = nn.Parameter(
-        in_proj_weight1[n_emb : 2 * n_emb, :]
-    )
-    fake_layer.self_attn.values.weight = nn.Parameter(
-        in_proj_weight1[2 * n_emb : 3 * n_emb, :]
-    )
-    decoder_layer.multihead_attn.in_proj_weight = nn.Parameter(in_proj_weight2)
-    fake_layer.multihead_attn.queries.weight = nn.Parameter(in_proj_weight2[0:n_emb, :])
-    fake_layer.multihead_attn.keys.weight = nn.Parameter(
-        in_proj_weight2[n_emb : 2 * n_emb, :]
-    )
-    fake_layer.multihead_attn.values.weight = nn.Parameter(
-        in_proj_weight2[2 * n_emb : 3 * n_emb, :]
-    )
-    decoder_layer.self_attn.out_proj.weight = nn.Parameter(out_proj_weight1)
-    fake_layer.self_attn.fc_out.weight = nn.Parameter(out_proj_weight1)
-    decoder_layer.multihead_attn.out_proj.weight = nn.Parameter(out_proj_weight2)
-    fake_layer.multihead_attn.fc_out.weight = nn.Parameter(out_proj_weight2)
-    out = decoder_layer(0, tgt, memory, mask, memory_mask)
-    dout = torch.randn_like(out)
-    loss = (out * dout).sum()
-    loss.backward()
-    fake_out = fake_layer(fake_tgt, fake_memory, mask, memory_mask)
-    fake_loss = (fake_out * dout).sum()
-    fake_loss.backward()
-
-    print(out)
-    print(fake_out)
-    print(out - fake_out)
-
-    print(tgt.grad)
-    print(memory.grad)
-    print(fake_tgt.grad)
-    print(fake_memory.grad)
-    print(tgt.grad - fake_tgt.grad)
-    print(memory.grad - fake_memory.grad)
+    main()

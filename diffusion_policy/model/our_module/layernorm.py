@@ -91,9 +91,8 @@ class LayerNorm(torch.nn.Module):
         int16_tensor2 = int16_tensor2.to(torch.long)
         int16_tensor2 = torch.where(int16_tensor2 >= 0, int16_tensor2 + 22545, int16_tensor2 + 32768)
 
-        self.add_result = self.add_result.to(x1.device)
-        output = LayerNorm.add_result[int16_tensor1, int16_tensor2]
-        return output
+        output = LayerNorm.add_result[int16_tensor1.cpu(), int16_tensor2.cpu()]
+        return output.to(x1.device)
 
     def array_sum(self, x: torch.Tensor):
         self.threshold = self.threshold.to(x.device)
@@ -110,29 +109,29 @@ class LayerNorm(torch.nn.Module):
         return result
 
     def forward(self, input: torch.Tensor):
-        return LayerNormFunc_sim.apply(input, self.eps)
+        # return LayerNormFunc_sim.apply(input, self.eps)
 
         input = input.to(torch.float16) 
         
         B, _, _ = input.shape
-        # sum_r = torch.zeros([B, 16, 1], dtype=torch.float16).to(input.device)
-        # sum = input.reshape(B, 16, 8, 32).sum(dim=-1)
-        # sum = self.sum_tree(input.reshape(B, 16, 8, 32))
-        # for i in range(8):
-        #     sum_r = sum_r + sum[:, :, i:i+1]
-        sum_r = input.sum(dim=-1, keepdim=True)
+        sum_r = torch.zeros([B, 16, 1], dtype=torch.float16).to(input.device)
+        sum = input.reshape(B, 16, 8, 32).sum(dim=-1)
+        sum = self.sum_tree(input.reshape(B, 16, 8, 32))
+        for i in range(8):
+            sum_r = sum_r + sum[:, :, i:i+1]
+        # sum_r = input.sum(dim=-1, keepdim=True)
         mean = sum_r * self.delta.to(input.device)
 
         minus = (input - mean)
 
         sq = torch.square(minus)
 
-        # var = torch.zeros([B, 16, 1], dtype=torch.float16).to(input.device)
-        # sum = sq.reshape(B, 16, 8, 32).sum(dim=-1)
-        # sum = self.sum_tree(sq.reshape(B, 16, 8, 32))
-        # for i in range(8):
-        #     var = var + sum[:, :, i:i+1]
-        var = sq.sum(dim=-1, keepdim=True)
+        var = torch.zeros([B, 16, 1], dtype=torch.float16).to(input.device)
+        sum = sq.reshape(B, 16, 8, 32).sum(dim=-1)
+        sum = self.sum_tree(sq.reshape(B, 16, 8, 32))
+        for i in range(8):
+            var = var + sum[:, :, i:i+1]
+        # var = sq.sum(dim=-1, keepdim=True)
         
         std = 1 / (var + 1e-5)
         
@@ -141,6 +140,20 @@ class LayerNorm(torch.nn.Module):
         normlized_x = minus * std * 16
 
         return normlized_x.to(torch.float16)
+
+
+def make_layer_norm(
+    normalized_shape, eps: float = 1e-5, elementwise_affine: bool = True
+):
+    if normalized_shape == 256:
+        return LayerNorm(normalized_shape, eps, elementwise_affine)
+    if normalized_shape == 768:
+        from diffusion_policy.model.our_module.layernorm_768 import LayerNorm as LayerNorm768
+
+        return LayerNorm768(normalized_shape, eps, elementwise_affine)
+    raise ValueError(
+        f"Unsupported LayerNorm width {normalized_shape}; expected 256 or 768"
+    )
 
 
 if __name__ == "__main__":

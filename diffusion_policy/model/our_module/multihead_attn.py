@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 # import torch.nn.functional as F
-from diffusion_policy.model.our_module.linear import Linear
+# from diffusion_policy.model.our_module.linear import Linear
 import diffusion_policy.model.our_module.quant_linear_a as qu
 from diffusion_policy.model.our_module.softmax import Softmax
 import diffusion_policy.model.our_module.quant_linear_b as fe
@@ -88,29 +88,29 @@ class MultiHeadAttention(nn.Module):
             self.head_dim * num_heads == embed_size
         ), "Embedding size needs to be divisible by heads"
 
-        # self.values = qu.Linear(embed_size, embed_size, bias=False)
-        # self.keys = qu.Linear(embed_size, embed_size, bias=False)
-        # self.queries = qu.Linear(embed_size, embed_size, bias=False)
-        # self.fc_out = fe.Linear(embed_size, embed_size, bias=False)
-        self.values = Linear(embed_size, embed_size, bias=False)
-        self.keys = Linear(embed_size, embed_size, bias=False)
-        self.queries = Linear(embed_size, embed_size, bias=False)
-        self.fc_out = Linear(embed_size, embed_size, bias=False)
-        self.softmax = nn.Softmax(dim=3)
-        # self.softmax = Softmax()
+        self.values = qu.Linear(embed_size, embed_size, bias=False)
+        self.keys = qu.Linear(embed_size, embed_size, bias=False)
+        self.queries = qu.Linear(embed_size, embed_size, bias=False)
+        self.fc_out = fe.Linear(embed_size, embed_size, bias=False)
+        # self.values = Linear(embed_size, embed_size, bias=False)
+        # self.keys = Linear(embed_size, embed_size, bias=False)
+        # self.queries = Linear(embed_size, embed_size, bias=False)
+        # self.fc_out = Linear(embed_size, embed_size, bias=False)
+        # self.softmax = nn.Softmax(dim=3)
+        self.softmax = Softmax()
         self.dropout = nn.Dropout(self.dropout)
 
     def forward(self, queries, keys, values, attn_mask=None):
-        # queries, q_delta = self.queries(queries, 1, queries.clone().detach().to(torch.float)) 
-        # keys, k_delta = self.keys(keys, 1, keys.clone().detach().to(torch.float))
-        # values, v_delta = self.values(values, 1, values.clone().detach().to(torch.float))
+        queries, q_delta = self.queries(queries, 1, queries.clone().detach().to(torch.float))
+        keys, k_delta = self.keys(keys, 1, keys.clone().detach().to(torch.float))
+        values, v_delta = self.values(values, 1, values.clone().detach().to(torch.float))
 
-        # queries = queries.to(torch.float) * q_delta
-        # keys = keys.to(torch.float) * k_delta
-        # values = values.to(torch.float) * v_delta
-        queries = self.queries(queries)
-        keys = self.keys(keys)
-        values = self.values(values)
+        queries = queries.to(torch.float) * q_delta
+        keys = keys.to(torch.float) * k_delta
+        values = values.to(torch.float) * v_delta
+        # queries = self.queries(queries)
+        # keys = self.keys(keys)
+        # values = self.values(values)
 
         qk = MultiHeadAttentionFunc1.apply(queries, keys, self.num_heads, attn_mask)
         # print("qk:", qk.max())

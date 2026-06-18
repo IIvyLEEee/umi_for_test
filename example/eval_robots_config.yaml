@@ -11,7 +11,12 @@
       "height_threshold": -0.024,
       # sphere collision primitive size and location for inter-gripper collision avoidance
       # 0 to disable
-      "sphere_radius": 0.1, "sphere_center": [0, -0.06, -0.185]
+      "sphere_radius": 0.1, "sphere_center": [0, -0.06, -0.185],
+      # joint reset target used only when launched with -j/--init_joints
+      # "joints_init_deg": [0, -90, -90, -90, 90, 0]
+      "joints_init_deg": [159.716, -99.009, 147.711, 175.98, -81.625, -10.446]
+      # "joints_init_deg": [152.138, -104.967, 142.73, 188.657, -84.285, -14.636]
+      # "joints_init_deg": [171.505, -89.025, 142.592, 165.91, -84.561, -10.596]
     },
     # {
     #   "robot_type": "ur5",

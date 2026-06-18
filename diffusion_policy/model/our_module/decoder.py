@@ -3,17 +3,15 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
-from diffusion_policy.model.our_module.layernorm import LayerNorm
+from diffusion_policy.model.our_module.layernorm import make_layer_norm
 import diffusion_policy.model.our_module.quant_linear_a as qu
 import diffusion_policy.model.our_module.quant_linear_c as fe
 
 from diffusion_policy.model.our_module.multihead_attn import MultiHeadAttention
-from diffusion_policy.model.our_module.linear import Linear
+# from diffusion_policy.model.our_module.linear import Linear
 from diffusion_policy.model.our_module.relu import relu
 from torch.nn.modules.container import ModuleList
 
-
-import matplotlib.pyplot as plt
 class TransformerDecoderLayer(nn.Module):
     __constants__ = ["batch_first", "norm_first"]
 
@@ -34,17 +32,17 @@ class TransformerDecoderLayer(nn.Module):
             d_model, nhead, dropout=dropout, batch_first=True
         )
         # Implementation of Feedforward model
-        # self.linear1 = qu.Linear(d_model, 1024)
-        self.linear1 = Linear(d_model, 1024)
+        self.linear1 = qu.Linear(d_model, dim_feedforward)
+        # self.linear1 = Linear(d_model, 1024)
         self.dropout = nn.Dropout(dropout)
-        # self.linear2 = fe.Linear(1024, d_model)
-        self.linear2 = Linear(1024, d_model)
+        self.linear2 = fe.Linear(dim_feedforward, d_model)
+        # self.linear2 = Linear(1024, d_model)
         
 
         self.norm_first = norm_first
-        self.norm1 = LayerNorm(d_model, eps=layer_norm_eps, elementwise_affine=False)
-        self.norm2 = LayerNorm(d_model, eps=layer_norm_eps, elementwise_affine=False)
-        self.norm3 = LayerNorm(d_model, eps=layer_norm_eps, elementwise_affine=False)
+        self.norm1 = make_layer_norm(d_model, eps=layer_norm_eps, elementwise_affine=False)
+        self.norm2 = make_layer_norm(d_model, eps=layer_norm_eps, elementwise_affine=False)
+        self.norm3 = make_layer_norm(d_model, eps=layer_norm_eps, elementwise_affine=False)
         self.dropout1 = nn.Dropout(dropout)
         self.dropout2 = nn.Dropout(dropout)
         self.dropout3 = nn.Dropout(dropout)
@@ -102,14 +100,14 @@ class TransformerDecoderLayer(nn.Module):
     # feed forward block
     def _ff_block(self, x: torch.Tensor, init, number) -> torch.Tensor:
         # out1, out_delta1 = self.linear1(x, 16, x.clone().detach().to(torch.float) * 16)
-        # out1, out_delta1 = self.linear1(x, 1, x.clone().detach().to(torch.float))
-        out1 = self.linear1(x)
+        out1, out_delta1 = self.linear1(x, 1, x.clone().detach().to(torch.float))
+        # out1 = self.linear1(x)
 
         out1 = self.activation(out1)
 
         # out1 = out1 * out_delta1
-        # x = self.linear2(out1, out_delta1)
-        x = self.linear2(out1)
+        x = self.linear2(out1, out_delta1)
+        # x = self.linear2(out1)
 
         return self.dropout3(x)
 

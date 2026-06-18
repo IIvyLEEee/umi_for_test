@@ -212,9 +212,19 @@ class BimanualUmiEnv:
             )
 
         cube_diag = np.linalg.norm([1,1,1])
-        j_init = np.array([0,-90,-90,-90,90,0]) / 180 * np.pi
-        if not init_joints:
-            j_init = None
+        default_j_init = np.array([0,-90,-90,-90,90,0], dtype=np.float64) / 180 * np.pi
+
+        def get_robot_joints_init(robot_config):
+            if not init_joints:
+                return None
+            if 'joints_init_deg' in robot_config:
+                joints_init = np.asarray(robot_config['joints_init_deg'], dtype=np.float64) / 180 * np.pi
+            elif 'joints_init' in robot_config:
+                joints_init = np.asarray(robot_config['joints_init'], dtype=np.float64)
+            else:
+                joints_init = default_j_init
+            assert joints_init.shape == (6,)
+            return joints_init
 
         assert len(robots_config) == len(grippers_config)
         robots: List[RTDEInterpolationController] = list()
@@ -222,6 +232,7 @@ class BimanualUmiEnv:
         for rc in robots_config:
             if rc['robot_type'].startswith('ur5'):
                 assert rc['robot_type'] in ['ur5', 'ur5e']
+                joints_init = get_robot_joints_init(rc)
                 this_robot = RTDEInterpolationController(
                     shm_manager=shm_manager,
                     robot_ip=rc['robot_ip'],
@@ -234,7 +245,7 @@ class BimanualUmiEnv:
                     tcp_offset_pose=[0, 0, rc['tcp_offset'], 0, 0, 0],
                     payload_mass=None,
                     payload_cog=None,
-                    joints_init=j_init,
+                    joints_init=joints_init,
                     joints_init_speed=1.05,
                     soft_real_time=False,
                     verbose=False,

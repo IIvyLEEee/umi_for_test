@@ -5,7 +5,8 @@ import torch.nn as nn
 from diffusion_policy.model.our_module.sinusoidal_posemb import SinusoidalPosEmb
 from diffusion_policy.model.common.module_attr_mixin import ModuleAttrMixin
 from diffusion_policy.model.our_module.decoder import TransformerDecoder, TransformerDecoderLayer
-from diffusion_policy.model.our_module.layernorm import LayerNorm
+from diffusion_policy.model.our_module.layernorm import LayerNorm, make_layer_norm
+from diffusion_policy.model.our_module.layernorm_768 import LayerNorm as LayerNorm768
 from diffusion_policy.model.our_module.softmax import Softmax
 
 from diffusion_policy.model.our_module.linear import Linear
@@ -31,8 +32,8 @@ class TransformerForActionDiffusion(ModuleAttrMixin):
         super().__init__()
         
         # input embedding stem
-        # self.input_emb = qub.Linear(input_dim, n_emb)
-        self.input_emb = Linear(input_dim, n_emb)
+        self.input_emb = qub.Linear(input_dim, n_emb)
+        # self.input_emb = Linear(input_dim, n_emb)
         self.pos_emb = nn.Parameter(torch.randn((1, action_horizon, n_emb)))
         self.time_emb = SinusoidalPosEmb(n_emb)
         # learnable position embedding
@@ -52,9 +53,9 @@ class TransformerForActionDiffusion(ModuleAttrMixin):
         )
         
         # decoder head
-        self.ln_f = LayerNorm(n_emb, elementwise_affine=False)
-        # self.head = qub.Linear(n_emb, output_dim)
-        self.head = Linear(n_emb, output_dim)
+        self.ln_f = make_layer_norm(n_emb, elementwise_affine=False)
+        self.head = qub.Linear(n_emb, output_dim)
+        # self.head = Linear(n_emb, output_dim)
         
         self.action_horizon = action_horizon
         
@@ -75,6 +76,7 @@ class TransformerForActionDiffusion(ModuleAttrMixin):
             # ReLU,
             Softmax,
             LayerNorm,
+            LayerNorm768,
             nn.LayerNorm,
             nn.Mish,
             nn.Sequential,
@@ -223,8 +225,8 @@ class TransformerForActionDiffusion(ModuleAttrMixin):
         
         # 3. process input
         # input_emb = self.input_emb(sample, 1, sample.to(torch.float), 8).to(torch.float16)
-        # input_emb = self.input_emb(sample, 1, sample.clone().detach().to(torch.float)) #.to(torch.float16)
-        input_emb = self.input_emb(sample, init)
+        input_emb = self.input_emb(sample, 1, sample.clone().detach().to(torch.float)) #.to(torch.float16)
+        # input_emb = self.input_emb(sample, init)
 
         t = input_emb.shape[1]
         pos_emb = self.pos_emb[:, :t, :] #.to(torch.float16) 
@@ -241,12 +243,9 @@ class TransformerForActionDiffusion(ModuleAttrMixin):
         x = self.ln_f(x)
 
         # x = self.head(x, 16, x.clone().detach() * 16)
-        # x = self.head(x, 1, x.clone().detach())
-        x = self.head(x)
+        x = self.head(x, 1, x.clone().detach())
+        # x = self.head(x)
         # (B, T, n_out)
-        print("A noise of inference: ")
-        print(x.max())
-        print()
         # exit()
         return x.to(torch.float)
         

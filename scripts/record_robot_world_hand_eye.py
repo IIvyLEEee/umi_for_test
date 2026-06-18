@@ -25,7 +25,7 @@ from umi.common.precise_sleep import precise_wait
 # %%
 @click.command()
 @click.option('-o', '--output', required=True, type=str)
-@click.option('-r', '--robot_ip', default='172.24.95.8')
+@click.option('-r', '--robot_ip', default='192.168.1.2')
 @click.option('-v', '--v4l_idx', type=int, default=0)
 def main(output, robot_ip, v4l_idx):
     cv2.setNumThreads(4)
@@ -121,6 +121,7 @@ def main(output, robot_ip, v4l_idx):
                         
                 # handle robot stuff
                 sm_state = sm.get_motion_state_transformed()
+                # print("sm_state", np.round(sm_state, 3))
                 dpos = sm_state[:3] * (max_pos_speed / frequency)
                 drot_xyz = sm_state[3:] * (max_rot_speed / frequency)
 
