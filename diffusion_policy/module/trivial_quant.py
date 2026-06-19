@@ -188,6 +188,7 @@ class TrivialQuantLinear(nn.Module):
         self.pack_format = self.quant["pack_format"]
         self.padded_in_features = int(math.ceil(self.in_features / self.group_size) * self.group_size)
         self.num_groups = self.padded_in_features // self.group_size
+        self._cached_eval_weight = None
 
         if self.runtime == "packed":
             self.register_parameter("weight", None)
@@ -224,6 +225,15 @@ class TrivialQuantLinear(nn.Module):
             return qweight
         return fake_quant_weight_int8(self.weight, self.group_size)
 
+    def prepare_eval_cache(self) -> None:
+        if self.runtime == "packed":
+            self._cached_eval_weight = self._packed_weight().detach()
+        else:
+            self._cached_eval_weight = self._fake_quant_weight().detach()
+
+    def clear_eval_cache(self) -> None:
+        self._cached_eval_weight = None
+
     def _packed_weight(self) -> torch.Tensor:
         if self.weight_bits == 4 or self.weight_format == "fp4":
             n_values = self.padded_in_features
@@ -254,7 +264,10 @@ class TrivialQuantLinear(nn.Module):
                 self.qweight.copy_(qweight.to(self.qweight.device))
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
-        if self.runtime == "packed":
+        if self._cached_eval_weight is not None and not self.training:
+            weight = self._cached_eval_weight.to(device=input.device, dtype=input.dtype)
+            x = input if self.runtime == "packed" else fake_quant_act_symmetric(input, self.activation_bits)
+        elif self.runtime == "packed":
             weight = self._packed_weight().to(device=input.device, dtype=input.dtype)
             x = input
         else:

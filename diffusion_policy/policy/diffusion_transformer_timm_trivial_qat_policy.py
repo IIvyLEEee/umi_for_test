@@ -10,6 +10,7 @@ from diffusion_policy.model.vision.transformer_obs_encoder import TransformerObs
 from diffusion_policy.module.transformer_for_action_diffusion_trivial_qat import (
     TransformerForActionDiffusionTrivialQAT,
 )
+from diffusion_policy.module.trivial_quant import TrivialQuantLinear
 from diffusion_policy.policy.base_image_policy import BaseImagePolicy
 
 
@@ -61,6 +62,16 @@ class DiffusionTransformerTimmTrivialQATPolicy(BaseImagePolicy):
         if num_inference_steps is None:
             num_inference_steps = noise_scheduler.config.num_train_timesteps
         self.num_inference_steps = num_inference_steps
+
+    def prepare_eval_cache(self):
+        for module in self.model.modules():
+            if isinstance(module, TrivialQuantLinear):
+                module.prepare_eval_cache()
+
+    def clear_eval_cache(self):
+        for module in self.model.modules():
+            if isinstance(module, TrivialQuantLinear):
+                module.clear_eval_cache()
 
     def conditional_sample(self, condition_data, condition_mask, cond=None, generator=None, **kwargs):
         model = self.model

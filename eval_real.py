@@ -251,6 +251,9 @@ def main(input, output, robot_config,
             policy.model.half()
             # policy.obs_encoder.half()
             policy.eval().to(device)
+            if hasattr(policy, 'prepare_eval_cache'):
+                policy.prepare_eval_cache()
+                print('Prepared trivial quant eval weight cache')
 
             print("Warming up policy inference")
             obs = env.get_obs()
