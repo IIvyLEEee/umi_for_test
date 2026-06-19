@@ -4,6 +4,7 @@ import logging
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from diffusion_policy.model.common.module_attr_mixin import ModuleAttrMixin
 from diffusion_policy.module.relu import relu
@@ -20,7 +21,7 @@ class MultiHeadAttention(nn.Module):
         self.embed_size = embed_size
         self.num_heads = num_heads
         self.head_dim = embed_size // num_heads
-        self.dropout = dropout
+        self.dropout_p = float(dropout)
         self.batch_first = batch_first
 
         assert self.head_dim * num_heads == embed_size, "Embedding size needs to be divisible by heads"
@@ -29,8 +30,7 @@ class MultiHeadAttention(nn.Module):
         self.keys = LinearA(embed_size, embed_size, bias=False, quant=quant)
         self.queries = LinearA(embed_size, embed_size, bias=False, quant=quant)
         self.fc_out = LinearB(embed_size, embed_size, bias=False, quant=quant)
-        self.softmax = nn.Softmax(dim=-1)
-        self.dropout = nn.Dropout(self.dropout)
+        self.dropout = nn.Dropout(self.dropout_p)
 
     def forward(self, queries, keys, values, attn_mask=None):
         queries, q_delta = self.queries(queries, 1, queries.detach().to(torch.float))
@@ -48,11 +48,13 @@ class MultiHeadAttention(nn.Module):
         keys = keys.reshape(batch_size, key_len, self.num_heads, self.head_dim).transpose(1, 2)
         values = values.reshape(batch_size, value_len, self.num_heads, self.head_dim).transpose(1, 2)
 
-        energy = torch.matmul(queries / (self.head_dim ** 0.5), keys.transpose(-2, -1))
-        if attn_mask is not None:
-            energy = energy + attn_mask
-        attention = self.dropout(self.softmax(energy))
-        out = torch.matmul(attention, values)
+        out = F.scaled_dot_product_attention(
+            queries,
+            keys,
+            values,
+            attn_mask=attn_mask,
+            dropout_p=self.dropout_p if self.training else 0.0,
+        )
         out = out.transpose(1, 2).reshape(batch_size, query_len, embed_size)
         return self.fc_out(out, 1, out)
 

@@ -121,6 +121,7 @@ def solve_sphere_collision(ee_poses, robots_config):
 @click.option('--play_speed', default=1.0, type=float, help="Playback speed multiplier for submitted action timestamps.")
 @click.option('--num_inference_steps', '--denoise_steps', default=16, type=int, show_default=True, help="DDIM denoising iterations for each policy inference.")
 @click.option('--inference_latency_scale', default=1.0, type=float, show_default=True, help="Scale policy inference latency by sleeping after each inference.")
+@click.option('--compile_model', is_flag=True, default=False, help="Compile the denoising model with torch.compile before warm-up.")
 @click.option('--command_latency', '-cl', default=0.01, type=float, help="Latency between receiving SapceMouse command to executing on Robot in Sec.")
 @click.option('-nm', '--no_mirror', is_flag=True, default=True)
 @click.option('-sf', '--sim_fov', type=float, default=None)
@@ -129,9 +130,9 @@ def solve_sphere_collision(ee_poses, robots_config):
 def main(input, output, robot_config, 
     match_dataset, match_episode, match_camera,
     camera_reorder,
-    vis_camera_idx, init_joints, 
+    vis_camera_idx, init_joints,
     steps_per_inference, max_duration,
-    frequency, play_speed, num_inference_steps, inference_latency_scale, command_latency,
+    frequency, play_speed, num_inference_steps, inference_latency_scale, compile_model, command_latency,
     no_mirror, sim_fov, camera_intrinsics, mirror_swap):
     max_gripper_width = 0.09
     gripper_speed = 0.2
@@ -254,6 +255,9 @@ def main(input, output, robot_config,
             if hasattr(policy, 'prepare_eval_cache'):
                 policy.prepare_eval_cache()
                 print('Prepared trivial quant eval weight cache')
+            if compile_model:
+                policy.model = torch.compile(policy.model, mode='reduce-overhead', fullgraph=False)
+                print('Compiled policy.model with torch.compile')
 
             print("Warming up policy inference")
             obs = env.get_obs()
@@ -264,7 +268,7 @@ def main(input, output, robot_config,
                     obs[f'robot{robot_id}_eef_rot_axis_angle']
                 ], axis=-1)[-1]
                 episode_start_pose.append(pose)
-            with torch.no_grad():
+            with torch.inference_mode():
                 policy.reset()
                 obs_dict_np = get_real_umi_obs_dict(
                     env_obs=obs, shape_meta=cfg.task.shape_meta, 
@@ -482,7 +486,7 @@ def main(input, output, robot_config,
                         # print(f'Obs latency {time.time() - obs_timestamps[-1]}')
 
                         # run inference
-                        with torch.no_grad():
+                        with torch.inference_mode():
                             s = time.time()
                             obs_dict_np = get_real_umi_obs_dict(
                                 env_obs=obs, shape_meta=cfg.task.shape_meta, 
